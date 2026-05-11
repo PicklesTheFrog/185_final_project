@@ -40,7 +40,41 @@ def iter_minibatches(
     generator: Optional[torch.Generator] = None,
     device: Optional[torch.device] = None,
 ) -> Iterator[RolloutBatch]:
-    del batch, minibatch_size, shuffle, generator, device
     # TODO(student): iterate over the rollout in minibatches, optionally shuffling the row indices,
     # and yield RolloutBatch objects containing the selected subset.
-    raise NotImplementedError("Implement iter_minibatches in the student starter.")
+    N = batch.input_ids.shape[0]
+    idx_device = batch.input_ids.device
+
+    if shuffle:
+        indices = torch.randperm(N, generator=generator, device=idx_device)
+    else: 
+        indices = torch.arange(N, device=idx_device)
+
+    ptr = 0
+
+    while ptr < N:
+        batch_indices = indices[ptr : min(ptr + minibatch_size, N)]
+
+        next_batch = RolloutBatch(
+            batch.input_ids[batch_indices], 
+            batch.attention_mask[batch_indices],
+            batch.completion_mask[batch_indices],
+            batch.old_logprobs[batch_indices],
+            batch.ref_logprobs[batch_indices],
+            batch.rewards[batch_indices],
+            batch.advantages[batch_indices],
+        )
+        
+        if batch.task_names is not None:
+            idx_list = batch_indices.tolist()
+            next_batch.task_names = [batch.task_names[i] for i in idx_list]
+
+        if batch.completion_texts is not None:
+            idx_list = batch_indices.tolist()
+            next_batch.completion_texts = [batch.completion_texts[i] for i in idx_list]
+
+        if device is not None:
+            next_batch = next_batch.to(device)
+            
+        ptr += minibatch_size
+        yield next_batch
