@@ -75,7 +75,7 @@ class OnlineRMGRPOConfig:
     adv_clip: float = 5.0
 
     max_prompt_tokens: int = 700
-    max_response_tokens: int = 256
+    max_response_tokens: int = 512
     train_limit: int = 0
     eval_limit: int = 64
     reward_batch_size: int = 16
@@ -207,11 +207,48 @@ def _compute_group_advantages(
     *,
     divide_by_std: bool,
 ) -> torch.Tensor:
-    del eps
     # TODO(student): compute one scalar advantage per sampled completion by grouping rewards
     # into prompt-wise batches of size `group_size`, subtracting the group mean, and optionally
     # dividing by the group standard deviation when `divide_by_std=True`.
-    raise NotImplementedError("Implement _compute_group_advantages in the student starter.")
+
+    remainder = 0
+    if group_size > 0:
+        remainder = rewards.shape[0] % group_size
+        if remainder > 0:
+            rewards = torch.cat([rewards, torch.zeros(size=(group_size-remainder,), device=rewards.device)], dim = 0)
+        rewards = rewards.reshape((-1, group_size))
+    
+    mean = torch.mean(rewards, dim=1, keepdim=True)
+    std = torch.nan_to_num(torch.std(rewards, dim=1, keepdim=True, unbiased=False))
+
+    if remainder > 0:
+        mean[-1] = torch.mean(rewards[-1][:remainder])
+        std[-1] = torch.nan_to_num(torch.std(rewards[-1][:remainder], unbiased=False))
+
+    advantage = torch.nan_to_num((rewards - mean) / (std + eps))
+
+    if remainder > 0:
+        return torch.flatten(advantage)[:-(group_size - remainder)]
+    else:
+        return torch.flatten(advantage)
+
+    # N = rewards.numel()
+
+    # if group_size <= 1 or N % group_size != 0:
+    #     return torch.zeros_like(rewards)
+    
+    # num_groups = N // group_size
+    # rewards_grouped = rewards.view(num_groups, group_size)
+
+    # mean = rewards_grouped.mean(dim=1, keepdim=True)
+    # std = rewards_grouped.std(dim=1, keepdim=True, unbiased=False)
+
+    # advantages = rewards_grouped - mean
+    # if divide_by_std:
+    #     # std = std.clamp_min(eps) HERE
+    #     advantages = advantages / (std + eps)
+
+    # return advantages.view(N)
 
 
 def _build_online_algo(cfg: OnlineRMGRPOConfig):
@@ -237,7 +274,11 @@ def _build_online_algo(cfg: OnlineRMGRPOConfig):
 def _algo_divides_advantages_by_std(algo: str) -> bool:
     # TODO(student): return True for the algorithms that use group-standard-deviation
     # normalization and False for the algorithms that intentionally avoid it.
-    raise NotImplementedError("Implement _algo_divides_advantages_by_std in the student starter.")
+    if algo == "dr_grpo":
+        return False
+    elif algo == "grpo":
+        return True
+    return True
 
 
 def _normalize_completion_for_reward_scoring(text: str) -> str:

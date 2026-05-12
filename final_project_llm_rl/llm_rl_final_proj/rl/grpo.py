@@ -28,7 +28,6 @@ class GRPO(RLAlgorithm):
         rollout: RolloutBatch,
         grad_accum_steps: int = 1,
     ) -> Dict[str, float]:
-        del model, optimizer, rollout, grad_accum_steps
         # TODO(student): implement one GRPO training iteration.
         # The intended structure is:
         #   1. loop over PPO epochs,
@@ -84,7 +83,7 @@ class GRPO(RLAlgorithm):
                 )
 
                 # 2–3. ratio
-                log_ratio = (new_logp - mb.old_logprobs).clamp(-20.0, 20.0)
+                log_ratio = (new_logp.to(torch.float32) - mb.old_logprobs.to(torch.float32)).clamp(-20.0, 20.0)
                 ratio = torch.exp(log_ratio)
 
                 # 4. broadcast advantage
@@ -93,7 +92,7 @@ class GRPO(RLAlgorithm):
                 # 5. PPO clipped objective
                 unclipped = ratio * adv_expanded
                 clipped = ratio.clamp(1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * adv_expanded
-                per_token_obj = torch.min(unclipped, clipped)
+                per_token_obj = torch.minimum(unclipped, clipped) # MIN vs MINIMUM
 
                 # sequence-level GRPO averaging
                 seq_obj = masked_mean_per_row(per_token_obj, mask)
@@ -103,7 +102,7 @@ class GRPO(RLAlgorithm):
                 kl = approx_kl_from_logprobs(new_logp, mb.ref_logprobs, mask)
 
                 # 7. logging metrics
-                entropy = -masked_mean(new_logp, mask)
+                entropy = -masked_mean(new_logp, mask) # .mean()
                 clipped_indicator = ((ratio - 1.0).abs() > cfg.clip_eps).float()
                 clipfrac = masked_mean(clipped_indicator, mask)
 
@@ -141,6 +140,18 @@ class GRPO(RLAlgorithm):
                 total_entropy += float(entropy.detach().item())
                 total_clipfrac += float(clipfrac.detach().item())
                 n_mb += 1
+
+            # end of epoch handling
+            if accum > 0 and (accum % max(1, grad_accum_steps)) != 0:
+                gnorm = clip_grad_norm_(trainable_params, cfg.max_grad_norm)
+                if math.isfinite(gnorm):
+                    optimizer.step()
+                    total_grad_norm += float(gnorm)
+                    opt_steps += 1
+                else:
+                    skipped_nonfinite += 1
+                optimizer.zero_grad(set_to_none=True)
+                accum = 0
 
         # final partial step
         if accum > 0 and (accum % max(1, grad_accum_steps)) != 0:
