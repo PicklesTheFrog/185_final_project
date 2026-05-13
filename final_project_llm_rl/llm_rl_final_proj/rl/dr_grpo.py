@@ -142,4 +142,3 @@ class DrGRPO(RLAlgorithm):
             "train/gradient_global_norm_after_clipping_mean_over_optimizer_steps": total_grad_norm / max(1, opt_steps),
             "train/count_optimizer_steps_per_training_iteration": float(opt_steps),
         }
-

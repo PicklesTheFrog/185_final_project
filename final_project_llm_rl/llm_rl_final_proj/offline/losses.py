@@ -82,9 +82,9 @@ def compute_offline_preference_loss(
         ref_margin_sum = reference_scores.chosen_logp_sum - reference_scores.rejected_logp_sum
         # TODO(student): compute the reference-corrected DPO logits.
         # Hint: compare the policy margin against the frozen reference margin.
-        logits = torch.sigmoid(beta*(policy_margin_sum - ref_margin_sum))
+        logits = policy_margin_sum - ref_margin_sum
         # TODO(student): replace this with the DPO logistic loss.
-        losses = -torch.log(logits)
+        losses = -F.logsigmoid(beta * logits)
         metrics.update(
             {
                 "preference/reference_margin_sum_mean": float(ref_margin_sum.detach().mean().item()),
@@ -113,12 +113,12 @@ def compute_offline_preference_loss(
             raise ValueError("AOT requires reference scores.")
         # TODO(student): convert policy/reference scores into chosen and rejected rewards,
         # sort both reward vectors, and apply a DPO-style logistic loss to the quantile gaps.
-        chosen_rewards = (torch.log(policy_scores.chosen_logp_sum) - torch.log(reference_scores.chosen_logp_sum)) #? beta
-        rejected_rewards = (torch.log(policy_scores.rejected_logp_sum) - torch.log(reference_scores.rejected_logp_sum))
-        quantile_gap = chosen_rewards - rejected_rewards
-        losses = -torch.log(torch.sigmoid(beta * quantile_gap))
-        print(losses.shape)
-        #losses = torch.mean(-torch.log(torch.sigmoid(beta * quantile_gap)), dim=1)
+        chosen_rewards = policy_scores.chosen_logp_sum - reference_scores.chosen_logp_sum
+        rejected_rewards = policy_scores.rejected_logp_sum - reference_scores.rejected_logp_sum
+        sorted_chosen, _ = torch.sort(chosen_rewards, dim=0, stable=True)
+        sorted_rejected, _ = torch.sort(rejected_rewards, dim=0, stable=True)
+        quantile_gap = sorted_chosen - sorted_rejected
+        losses = -F.logsigmoid(beta * quantile_gap)
         metrics.update(
             {
                 "preference/aot_chosen_reward_mean": float(chosen_rewards.detach().mean().item()),

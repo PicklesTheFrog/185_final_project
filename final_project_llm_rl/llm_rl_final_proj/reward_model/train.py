@@ -229,7 +229,7 @@ def main() -> None:
         batch_size=cfg.per_device_train_batch_size,
         shuffle=True,
         collate_fn=collator,
-        drop_last=False,
+        drop_last=True,
     )
     batches_per_epoch = len(train_loader)
     if batches_per_epoch <= 0:

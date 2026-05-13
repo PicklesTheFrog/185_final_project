@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+import math
 from typing import Dict
 
 import math
 import torch
 
-from llm_rl_final_proj.rl.base import RLAlgorithm
-from llm_rl_final_proj.rollout.rollout_buffer import RolloutBatch, iter_minibatches
-
 from llm_rl_final_proj.models.logprobs import (
-    approx_kl_from_logprobs,
     compute_per_token_logprobs,
+    approx_kl_from_logprobs,
+    masked_mean,
     masked_mean_per_row,
 )
+from llm_rl_final_proj.rl.base import RLAlgorithm
+from llm_rl_final_proj.rollout.rollout_buffer import RolloutBatch, iter_minibatches
 from llm_rl_final_proj.utils.torch_utils import clip_grad_norm_
 
 
@@ -38,7 +39,7 @@ class GRPO(RLAlgorithm):
         #   6. add KL regularization against mb.ref_logprobs,
         #   7. handle gradient accumulation / clipping / optimizer steps,
         #   8. return the logged metrics expected by the training script.
-        
+        # raise NotImplementedError("Implement GRPO.update in the student starter.")
         cfg = self.cfg
         model.train()
         model.config.use_cache = False
@@ -69,63 +70,91 @@ class GRPO(RLAlgorithm):
             ):
                 adv = mb.advantages.clamp(-cfg.adv_clip, cfg.adv_clip).detach()
                 mask = mb.completion_mask
+
                 if float(mask.sum().item()) <= 0.0:
                     skipped_empty += 1
                     continue
-                
-                new_logp = compute_per_token_logprobs(model, mb.input_ids, mb.attention_mask)
-                log_ratio = torch.clamp(new_logp - mb.old_logprobs, -20.0, 20.0)
+
+                # 1. recompute logprobs
+                new_logp = compute_per_token_logprobs(
+                    model,
+                    mb.input_ids,
+                    mb.attention_mask,
+                    enable_grad=True,
+                )
+
+                # 2–3. ratio
+                log_ratio = (new_logp.to(torch.float32) - mb.old_logprobs.to(torch.float32)).clamp(-20.0, 20.0)
                 ratio = torch.exp(log_ratio)
 
+                # 4. broadcast advantage
                 adv_expanded = adv.unsqueeze(1)
 
+                # 5. PPO clipped objective
                 unclipped = ratio * adv_expanded
-                clipped_ratio = torch.clamp(
-                    ratio,
-                    1.0 - cfg.clip_eps,
-                    1.0 + cfg.clip_eps,
-                )
-                clipped = clipped_ratio * adv_expanded
+                clipped = ratio.clamp(1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * adv_expanded
+                per_token_obj = torch.minimum(unclipped, clipped) # MIN vs MINIMUM
 
-                per_token_obj = torch.minimum(unclipped, clipped)
-                seq_lengths = mask.sum(dim=1).clamp(min=1)
-                seq_obj = (per_token_obj * mask).sum(dim=1) / seq_lengths
+                # sequence-level GRPO averaging
+                seq_obj = masked_mean_per_row(per_token_obj, mask)
                 pg_loss = -seq_obj.mean()
 
+                # 6. KL
                 kl = approx_kl_from_logprobs(new_logp, mb.ref_logprobs, mask)
-                entropy = -masked_mean_per_row(new_logp, mask).mean()
 
-                clipped_mask = (ratio > (1.0 + cfg.clip_eps)) | (ratio < (1.0 - cfg.clip_eps))
-                clipfrac = (clipped_mask.float() * mask).sum() / (mask.sum() + 1e-8)
+                # 7. logging metrics
+                entropy = -masked_mean(new_logp, mask) # .mean()
+                clipped_indicator = ((ratio - 1.0).abs() > cfg.clip_eps).float()
+                clipfrac = masked_mean(clipped_indicator, mask)
 
+                # total loss
                 loss = (pg_loss + cfg.kl_coef * kl) / max(1, grad_accum_steps)
+
                 if not torch.isfinite(loss):
                     skipped_nonfinite += 1
                     optimizer.zero_grad(set_to_none=True)
                     accum = 0
                     continue
-                loss.backward()
 
+                loss.backward()
                 accum += 1
 
+                # optimizer step
                 if (accum % max(1, grad_accum_steps)) == 0:
                     gnorm = clip_grad_norm_(trainable_params, cfg.max_grad_norm)
+
                     if not math.isfinite(gnorm):
                         skipped_nonfinite += 1
                         optimizer.zero_grad(set_to_none=True)
                         accum = 0
                         continue
+
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
+
                     total_grad_norm += float(gnorm)
                     opt_steps += 1
 
+                # logging accumulators
                 total_loss += float((loss.detach() * max(1, grad_accum_steps)).item())
                 total_kl += float(kl.detach().item())
                 total_entropy += float(entropy.detach().item())
                 total_clipfrac += float(clipfrac.detach().item())
                 n_mb += 1
 
+            # end of epoch handling
+            if accum > 0 and (accum % max(1, grad_accum_steps)) != 0:
+                gnorm = clip_grad_norm_(trainable_params, cfg.max_grad_norm)
+                if math.isfinite(gnorm):
+                    optimizer.step()
+                    total_grad_norm += float(gnorm)
+                    opt_steps += 1
+                else:
+                    skipped_nonfinite += 1
+                optimizer.zero_grad(set_to_none=True)
+                accum = 0
+
+        # final partial step
         if accum > 0 and (accum % max(1, grad_accum_steps)) != 0:
             gnorm = clip_grad_norm_(trainable_params, cfg.max_grad_norm)
             if math.isfinite(gnorm):

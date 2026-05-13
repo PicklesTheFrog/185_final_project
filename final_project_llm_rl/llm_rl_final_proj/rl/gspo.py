@@ -66,38 +66,25 @@ class GSPO(RLAlgorithm):
                     continue
                 
                 new_logp = compute_per_token_logprobs(model, mb.input_ids, mb.attention_mask)
-                log_ratio = torch.clamp(
-                    (new_logp - mb.old_logprobs) * mask, -20.0, 20.0
-                )
-                mean_log_ratio = masked_mean_per_row(log_ratio, mask=mask)
+                mean_log_ratio = masked_mean_per_row(new_logp - mb.old_logprobs, mask)
+                mean_ratio = torch.exp(mean_log_ratio.clamp(-20.0, 20.0))
 
-                ratio = torch.exp(log_ratio)
-                mean_ratio = torch.exp(mean_log_ratio)
-
-                adv_expanded = adv.unsqueeze(1)
-
-                # eps = 1e-8
-                # ratio[torch.logical_not(mask)] = 1.0
-                # geom_mean_ratio = torch.pow(ratio.prod(dim=1), 1/(mask.sum(dim=1) + eps))
-
-                unclipped = mean_ratio * adv_expanded
+                unclipped = mean_ratio * adv
                 clipped_ratio = torch.clamp(
                     mean_ratio,
                     1.0 - cfg.clip_eps,
                     1.0 + cfg.clip_eps,
                 )
-                clipped = clipped_ratio * adv_expanded
+                clipped = clipped_ratio * adv
 
-                # per_token_obj = unclipped * mask
-                # seq_obj = masked_mean_per_row(per_token_obj, mask)
                 seq_obj = torch.minimum(unclipped, clipped)
 
                 pg_loss = -seq_obj.mean()
                 kl = approx_kl_from_logprobs(new_logp, mb.ref_logprobs, mask)
-                entropy = -masked_mean_per_row(new_logp, mask).mean()
+                entropy = -masked_mean(new_logp, mask)      
 
-                clipped_mask = (ratio > (1.0 + cfg.clip_eps)) | (ratio < (1.0 - cfg.clip_eps))
-                clipfrac = (clipped_mask.float() * mask).sum() / (mask.sum() + 1e-8)
+                seq_clipped = (mean_ratio > 1.0 + cfg.clip_eps) | (mean_ratio < 1.0 - cfg.clip_eps)
+                clipfrac = seq_clipped.float().mean()   
 
                 loss = (pg_loss + cfg.kl_coef * kl) / max(1, grad_accum_steps)
                 if not torch.isfinite(loss):
