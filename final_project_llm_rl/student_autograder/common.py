@@ -52,7 +52,7 @@ class JudgeConfig:
     max_output_tokens: int = 220
     timeout_seconds: float = 120.0
     max_retries: int = 5
-    max_workers: int = 8
+    max_workers: int = 1
 
 
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
