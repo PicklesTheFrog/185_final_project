@@ -115,8 +115,8 @@ def compute_offline_preference_loss(
         # sort both reward vectors, and apply a DPO-style logistic loss to the quantile gaps.
         chosen_rewards = policy_scores.chosen_logp_sum - reference_scores.chosen_logp_sum
         rejected_rewards = policy_scores.rejected_logp_sum - reference_scores.rejected_logp_sum
-        sorted_chosen, _ = torch.sort(chosen_rewards)
-        sorted_rejected, _ = torch.sort(rejected_rewards)
+        sorted_chosen, _ = torch.sort(chosen_rewards, dim=0, stable=True)
+        sorted_rejected, _ = torch.sort(rejected_rewards, dim=0, stable=True)
         quantile_gap = sorted_chosen - sorted_rejected
         losses = -F.logsigmoid(beta * quantile_gap)
         metrics.update(
