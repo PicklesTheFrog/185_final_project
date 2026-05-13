@@ -216,10 +216,37 @@ def _compute_group_advantages(
         remainder = rewards.shape[0] % group_size
         if remainder > 0:
             rewards = torch.cat([rewards, torch.zeros(size=(group_size-remainder,), device=rewards.device)], dim = 0)
-        rewards = rewards.reshape((-1, group_size))
-    
-    mean = torch.mean(rewards, dim=1, keepdim=True)
+        rewards = rewards.reshape((-1, group_size)) 
+
+    # weighted avg
+    a = 0.1
+    batch_mean = torch.mean(rewards)
+    group_mean = torch.mean(rewards, dim=1, keepdim=True)
+    mean = a * batch_mean + (1 - a) * group_mean
     std = torch.nan_to_num(torch.std(rewards, dim=1, keepdim=True, unbiased=False))
+    
+    # lp 2
+    # p = 2
+    # div_rewards = rewards/group_size
+    # lp = torch.pow(div_rewards, p)
+    # lp_sum = torch.sum(lp, dim=1, keepdim=True)
+    # mean = torch.pow(lp_sum, 1/p) # not actually mean, just a baseline
+
+    # std = torch.nan_to_num(torch.std(rewards, dim=1, keepdim=True, unbiased=False))
+
+    # # Subtract min
+    # minimum = torch.min(rewards, dim=1, keepdim=True).values
+    # summation = torch.sum(rewards, dim=1, keepdim=True)
+    # mean = (summation - minimum) / (group_size - 1) # adjusted mean
+    # # mean = torch.mean(rewards, dim=1, keepdim=True)
+    # std = torch.nan_to_num(torch.std(rewards, dim=1, keepdim=True, unbiased=False))
+
+    # # Subtract max
+    # maximum = torch.max(rewards, dim=1, keepdim=True).values
+    # summation = torch.sum(rewards, dim=1, keepdim=True)
+    # mean = (summation - maximum) / (group_size - 1) # adjusted mean
+    # # mean = torch.mean(rewards, dim=1, keepdim=True)
+    # std = torch.nan_to_num(torch.std(rewards, dim=1, keepdim=True, unbiased=False))
 
     if remainder > 0:
         mean[-1] = torch.mean(rewards[-1][:remainder])
@@ -231,24 +258,6 @@ def _compute_group_advantages(
         return torch.flatten(advantage)[:-(group_size - remainder)]
     else:
         return torch.flatten(advantage)
-
-    # N = rewards.numel()
-
-    # if group_size <= 1 or N % group_size != 0:
-    #     return torch.zeros_like(rewards)
-    
-    # num_groups = N // group_size
-    # rewards_grouped = rewards.view(num_groups, group_size)
-
-    # mean = rewards_grouped.mean(dim=1, keepdim=True)
-    # std = rewards_grouped.std(dim=1, keepdim=True, unbiased=False)
-
-    # advantages = rewards_grouped - mean
-    # if divide_by_std:
-    #     # std = std.clamp_min(eps) HERE
-    #     advantages = advantages / (std + eps)
-
-    # return advantages.view(N)
 
 
 def _build_online_algo(cfg: OnlineRMGRPOConfig):
